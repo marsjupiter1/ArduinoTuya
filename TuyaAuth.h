@@ -270,6 +270,41 @@ class TuyaAuth {
       return false;
     }
 
+    bool TGetOnStatus(const char *device_id, const char *switch_code, bool &on) {
+
+      // are we waiting on authorisation?
+      if (strlen(tuya_token) == 0) {
+        Serial.print("@");
+        return false;
+      }
+
+      char buffer[600];
+      char command[100];
+      sprintf(command, "/v1.0/iot-03/devices/%s/status", device_id);
+      if (TGet(device_id, command, buffer)) {
+        Serial.println(buffer);
+        DynamicJsonDocument root(300);
+
+        DeserializationError err = deserializeJson(root, buffer);
+
+        if (err) {
+
+         
+          Serial.println(err.c_str());
+        } else {
+
+          if (root.containsKey("result")) {
+
+           on = root["result"]["code"][switch_code];
+           
+
+            return true;
+          } 
+        }
+      }
+      return false;
+    }
+
     bool TGet(const char *device_id, const char *command, char *out) {
 
       HTTPClient http;
