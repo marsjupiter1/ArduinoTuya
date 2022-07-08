@@ -242,6 +242,7 @@ class TuyaAuth {
       char buffer[1200];
       char command[200];
       sprintf(command, "/v1.0/iot-03/devices/%s/functions", device_id);
+      Serial.println(command);
       if (TGet(device_id, command, buffer)) {
         Serial.println(buffer);
         DynamicJsonDocument root(3000);
@@ -294,8 +295,8 @@ class TuyaAuth {
         } else {
 
           if (root.containsKey("result")) {
-
-           on = root["result"]["code"][switch_code];
+          
+           on = root["result"][0]["value"];
            
 
             return true;
@@ -337,7 +338,7 @@ class TuyaAuth {
       int err = http.GET();
 
       String body = http.getString();
-      Serial.println(body);
+      //Serial.println(body);
       if (err == 200) {
         strcpy(out, body.c_str());
         return true;
