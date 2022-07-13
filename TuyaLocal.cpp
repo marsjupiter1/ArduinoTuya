@@ -14,7 +14,7 @@
 #include <stdio.h>
 #include "TuyaLocal.hpp"
 #include "mbedtls/aes.h"
-#include "aes.hpp"
+#include "MD5.h"
 //#include "TI_aes_128_encr_only.h"
 #include <netdb.h>
 //#include <zlib.h>
@@ -23,6 +23,7 @@
 #include <chrono>
 #include <Arduino_CRC32.h>
 #include <errno.h>
+#include <base64.hpp>
 /* ... */
 Arduino_CRC32 Crc32;
 
@@ -31,8 +32,14 @@ Arduino_CRC32 Crc32;
 
 #endif
 
-tuyaLocal::tuyaLocal()
+tuyaLocal::tuyaLocal(String host, String device, String key, const char *protocol, int port)
 {
+	m_protocol = protocol;
+	client = NULL;
+	m_hostname = host;
+	m_portnumber = port;
+	m_key = key;
+	m_device_id = device;
 }
 
 tuyaLocal::~tuyaLocal()
@@ -40,138 +47,154 @@ tuyaLocal::~tuyaLocal()
 	disconnect();
 }
 
-#if 0
-int tuyaLocal::BuildTuyaMessage(unsigned char *buffer, const uint8_t command,String payload)
+#define MAX_BUFFER_SIZE 500
+String tuyaLocal::getDps()
 {
-	// pad payload to a multiple of 16 bytes
-	int payload_len = (int)payload.length();
-	uint8_t padding = 16 - (payload_len % 16);
-	for (int i = 0; i < padding; i++){
-		payload += (char)padding;
-	}	
-	payload_len = (int)payload.length();
 
-#ifdef DEBUG
-	std::cout << "dbg: padded payload (len=" << payload_len << "): ";
-	for (int i = 0; i < payload_len; ++i)
-		printf("%.2x", (uint8_t)payload[i]);
-	std::cout << "\n";
-#endif
+	unsigned char message_buffer[MAX_BUFFER_SIZE];
+	long currenttime = time(NULL);
+	String payload;
 
-	bcopy(MESSAGE_SEND_HEADER, (char *)&buffer[0], sizeof(MESSAGE_SEND_HEADER));
+	payload = String("{\"gwId\":\"") + m_device_id + String("\",\"devId\":\"") + m_device_id + String("\",\"uid\":\"") + m_device_id + String("\",\"t\":\"") + String(currenttime) + String("\"}");
 
-	int payload_pos = (int)sizeof(MESSAGE_SEND_HEADER);
-	if ((command != TUYA_DP_QUERY) && (command != TUYA_UPDATEDPS))
+	int payload_len = BuildTuyaMessage(message_buffer, TUYA_DP_QUERY, payload);
+
+	for (auto i = 0; i < payload_len; i++)
 	{
-		// add the protocol 3.3 secondary header
-		bcopy(PROTOCOL_33_HEADER, (char *)&buffer[payload_pos], sizeof(PROTOCOL_33_HEADER));
-		payload_pos += sizeof(PROTOCOL_33_HEADER);
+		Serial.print(message_buffer[i]);
 	}
-	bcopy(payload.c_str(), (char *)&buffer[payload_pos], payload_len);
-	bcopy(MESSAGE_SEND_TRAILER, (char *)&buffer[payload_pos + payload_len], sizeof(MESSAGE_SEND_TRAILER));
+	Serial.println("");
 
-	// insert command code in int32 @msg[8] (single byte value @msg[11])
-	buffer[11] = command;
-	// insert message size in int32 @msg[12]
-	buffer[14] = ((payload_pos + payload_len + sizeof(MESSAGE_SEND_TRAILER) - sizeof(MESSAGE_SEND_HEADER)) & 0xFF00) >> 8;
-	buffer[15] = (payload_pos + payload_len + sizeof(MESSAGE_SEND_TRAILER) - sizeof(MESSAGE_SEND_HEADER)) & 0xFF;
+	int numbytes = send(message_buffer, payload_len);
+	if (numbytes > 0)
+	{
 
-	// calculate CRC
+		numbytes = receive(message_buffer, MAX_BUFFER_SIZE - 1);
 
-	unsigned long crc = Crc32.calc(buffer, payload_pos + payload_len) & 0xFFFFFFFF;
-	buffer[payload_pos + payload_len] = (crc & 0xFF000000) >> 24;
-	buffer[payload_pos + payload_len + 1] = (crc & 0x00FF0000) >> 16;
-	buffer[payload_pos + payload_len + 2] = (crc & 0x0000FF00) >> 8;
-	buffer[payload_pos + payload_len + 3] = crc & 0x000000FF;
-
-#ifdef DEBUG
-	std::cout << "dbg: complete message: ";
-	for (int i = 0; i < (int)(payload_pos + payload_len + sizeof(MESSAGE_SEND_TRAILER)); ++i)
-		printf("%.2x", (uint8_t)buffer[i]);
-	std::cout << "\n";
-#endif
-
-	return (int)(payload_pos + payload_len + sizeof(MESSAGE_SEND_TRAILER));
+		String tuyaresponse = DecodeTuyaMessage(message_buffer, numbytes);
+	}
+	return "";
 }
-#endif
-#if 1
-int tuyaLocal::BuildTuyaMessage(unsigned char *buffer, const uint8_t command, String &payload, const String &encryption_key)
+
+
+int tuyaLocal::BuildTuyaMessage(unsigned char *buffer, const uint8_t command, String &payload, bool encrypt)
 {
 #ifdef DEBUG
+	std::cout << "protocol: "<< m_protocol.c_str()<< "\n";
 	std::cout << "dbg: payload: ";
 	std::cout << payload.c_str();
 	std::cout << "\n";
 #endif
 	// pad payload to a multiple of 16 bytes
 	int payload_len = (int)payload.length();
-	uint8_t padding = 16 - (payload_len % 16);
-	for (int i = 0; i < padding; i++){
-		payload += (char)padding;
-	}	
-	payload_len = (int)payload.length();
+	if (payload_len > 0 && (m_protocol != "3.1" || encrypt))
+	{
+		uint8_t padding = 16 - (payload_len % 16);
+		for (int i = 0; i < padding; i++)
+		{
+			payload += (char)padding;
+		}
+		payload_len = (int)payload.length();
 #ifdef DEBUG
-	std::cout << "dbg: padded payload: ";
-	std::cout << payload.c_str();
-	std::cout << "\n";
+		std::cout << "dbg: padded payload (len=" << payload_len << "): ";
+		for (int i = 0; i < payload_len; ++i)
+			printf("%.2x", (uint8_t)payload[i]);
+		std::cout << "\n";
 #endif
-#ifdef DEBUG
-	std::cout << "dbg: padded payload (len=" << payload_len << "): ";
-	for (int i = 0; i < payload_len; ++i)
-		printf("%.2x", (uint8_t)payload[i]);
-	std::cout << "\n";
-#endif
-	unsigned char out[500];
-	// AES aes(AESKeyLength::AES_128);
-	for (int i = 0; i < payload_len/16; ++i)
-    {
-		mbedtls_aes_context aes;
-		mbedtls_aes_init( &aes );
-		mbedtls_aes_setkey_enc(&aes, (const unsigned char *)encryption_key.c_str(), 128/*encryption_key.length() * 8*/);
-		// unsigned char *out = aes.EncryptECB((unsigned char*)payload.c_str(), payload_len, (unsigned char*)encryption_key.c_str());
-		mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_ENCRYPT, (const unsigned char *)payload.c_str()+i*16, &out[i*16]);
-		mbedtls_aes_free(&aes);
-	}	
-#ifdef DEBUG
-	std::cout << "dbg: encrypted payload: ";
-	for (int i = 0; i < payload_len; ++i)
-		printf("%.2x", (uint8_t)out[i]);
-	std::cout << "\n";
-#endif
-	struct AES_ctx ctx;
-	memcpy((void *)out,(void *)payload.c_str(),payload_len);
-    AES_init_ctx(&ctx, (const unsigned char *)encryption_key.c_str());	
-	for (int i = 0; i < payload_len/16; ++i)
-    {
- 		AES_ECB_encrypt(&ctx,  out+(16*i));
 	}
+
+	unsigned char out[500];
+	memcpy((void *)out, (void *)payload.c_str(), payload_len+1);
+	if (encrypt || m_protocol != "3.1")
+	{
+
+		for (int i = 0; i < payload_len / 16; ++i)
+		{
+			mbedtls_aes_context aes;
+			mbedtls_aes_init(&aes);
+			mbedtls_aes_setkey_enc(&aes, (const unsigned char *)m_key.c_str(), 128 /*encryption_key.length() * 8*/);
+
+			mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_ENCRYPT, (const unsigned char *)payload.c_str() + i * 16, &out[i * 16]);
+			mbedtls_aes_free(&aes);
+		}
+
 #ifdef DEBUG
-	std::cout << "dbg: encrypted payload: ";
-	for (int i = 0; i < payload_len; ++i)
-		printf("%.2x", (uint8_t)out[i]);
-	std::cout << "\n";
+		std::cout << "dbg: encrypted payload: ";
+		for (int i = 0; i < payload_len; ++i)
+			printf("%.2x", (uint8_t)out[i]);
+		std::cout << "\n";
 #endif
+	}
 
 	bcopy(MESSAGE_SEND_HEADER, (char *)&buffer[0], sizeof(MESSAGE_SEND_HEADER));
 
 	int payload_pos = (int)sizeof(MESSAGE_SEND_HEADER);
 	if ((command != TUYA_DP_QUERY) && (command != TUYA_UPDATEDPS))
 	{
-		// add the protocol 3.3 secondary header
-		bcopy(PROTOCOL_33_HEADER, (char *)&buffer[payload_pos], sizeof(PROTOCOL_33_HEADER));
-		payload_pos += sizeof(PROTOCOL_33_HEADER);
+		if (m_protocol != "3.1")
+		{
+			// add the protocol 3.3 secondary header
+			bcopy(PROTOCOL_33_HEADER, (char *)&buffer[payload_pos], sizeof(PROTOCOL_33_HEADER));
+			payload_pos += sizeof(PROTOCOL_33_HEADER);
+		}
 	}
+	if (m_protocol == "3.1" && encrypt)
+	{
+		// convert to base64
+	
+		unsigned char out1[200]; 
+		//payload_len = encode_base64( (unsigned char *)&out[0], payload_len,out1);
+		//mbedtls_base64_encode( out,500,(unsigned char *)e.c_str(), payload_len,&payload_len);
+		// add 3.1 info
+		std::cout << "base64 encoded: "<<out1 <<"\n";
+		for (int i = 0; i < payload_len / 16; ++i)
+		{
+			mbedtls_aes_context aes;
+			mbedtls_aes_init(&aes);
+			mbedtls_aes_setkey_enc(&aes, (const unsigned char *)m_key.c_str(), 128 /*encryption_key.length() * 8*/);
+
+			mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_ENCRYPT, ((const unsigned char *)out) + i * 16, &out1[i * 16]);
+			mbedtls_aes_free(&aes);
+		}
+		encode_base64( (unsigned char *)&out1[0], payload_len,out);
+		std::cout << "ecb encoded: "<<out <<"\n";
+		String premd5 = String("data=")+String((char *)out);
+		
+		premd5 += "||lpv=3.1||" + m_key;
+		std::cout << "3.1md5 string: "<< premd5.c_str()<<"\n";
+		unsigned char *hash = MD5::make_hash((char *)premd5.c_str());
+		// generate the digest (hex encoding) of our hash
+		char *md5str = MD5::make_digest(hash, 16);
+		md5str[24]='\0';
+		String md5mid = (char *)&md5str[8];
+		
+		String header = String("3.1") + md5mid;
+		std::cout << "header to "<<payload_pos<< " :"<<header.c_str()<<"\n";
+		bcopy(header.c_str(), &buffer[payload_pos], header.length());
+		payload_pos += header.length();
+		std::cout << "data header length: "<<header.length()<< "\n";
+		free(hash);
+		free(md5str);
+	}else{
+		std::cout << "dbg: 3.1 payload: ";
+		std::cout <<  out << "\n";
+	}
+	std::cout << "payload length: "<<payload_len<< "\n";
+	std::cout << "payload pos: "<<payload_pos<< "\n";
+	
 	bcopy(out, (char *)&buffer[payload_pos], payload_len);
 	bcopy(MESSAGE_SEND_TRAILER, (char *)&buffer[payload_pos + payload_len], sizeof(MESSAGE_SEND_TRAILER));
 
 	// insert command code in int32 @msg[8] (single byte value @msg[11])
 	buffer[11] = command;
-	// insert message size in int32 @msg[12]
-	buffer[14] = ((payload_pos + payload_len + sizeof(MESSAGE_SEND_TRAILER) - sizeof(MESSAGE_SEND_HEADER)) & 0xFF00) >> 8;
-	buffer[15] = (payload_pos + payload_len + sizeof(MESSAGE_SEND_TRAILER) - sizeof(MESSAGE_SEND_HEADER)) & 0xFF;
+	// insert message size in int32 @msg[12] doesn't include the header
+	buffer[14] = ((payload_pos + payload_len + sizeof(MESSAGE_SEND_TRAILER)-sizeof(MESSAGE_SEND_HEADER) ) & 0xFF00) >> 8;
+	buffer[15] = (payload_pos + payload_len + sizeof(MESSAGE_SEND_TRAILER)-sizeof(MESSAGE_SEND_HEADER) ) & 0xFF;
 
 	// calculate CRC
 
 	unsigned long crc = Crc32.calc(buffer, payload_pos + payload_len) & 0xFFFFFFFF;
+	// overwrite first 4 bytes of the trailer
 	buffer[payload_pos + payload_len] = (crc & 0xFF000000) >> 24;
 	buffer[payload_pos + payload_len + 1] = (crc & 0x00FF0000) >> 16;
 	buffer[payload_pos + payload_len + 2] = (crc & 0x0000FF00) >> 8;
@@ -181,14 +204,17 @@ int tuyaLocal::BuildTuyaMessage(unsigned char *buffer, const uint8_t command, St
 	std::cout << "dbg: complete message: ";
 	for (int i = 0; i < (int)(payload_pos + payload_len + sizeof(MESSAGE_SEND_TRAILER)); ++i)
 		printf("%.2x", (uint8_t)buffer[i]);
+	std::cout << "\n";	
+	for (int i = 16; i < (int)(payload_pos + payload_len + sizeof(MESSAGE_SEND_TRAILER)); ++i)
+		printf("%c", (uint8_t)buffer[i]);	
 	std::cout << "\n";
 #endif
 
 	return (int)(payload_pos + payload_len + sizeof(MESSAGE_SEND_TRAILER));
 }
-#endif
 
-String tuyaLocal::DecodeTuyaMessage(unsigned char *buffer, const int size, const String &encryption_key)
+
+String tuyaLocal::DecodeTuyaMessage(unsigned char *buffer, const int size)
 {
 	String result;
 
@@ -210,25 +236,45 @@ String tuyaLocal::DecodeTuyaMessage(unsigned char *buffer, const int size, const
 			// test for presence of secondary protocol 3.3 header (odd message size)
 			if ((message[15] & 0x1) && (encryptedpayload[0] == '3') && (encryptedpayload[1] == '.') && (encryptedpayload[2] == '3'))
 			{
+				m_protocol = "3.3";
 				encryptedpayload += 15;
 				payload_len -= 15;
 			}
+			else
+			{
+				m_protocol = "3.1";
+			}
 			unsigned char *out = (unsigned char *)calloc(payload_len + 1, sizeof(char));
 			// AES aes(AESKeyLength::AES_128);
-			mbedtls_aes_context aes;
+			std::cout << "payload length: " << payload_len << "\n";
+			if (payload_len > 0)
+			{
+				if (m_protocol == "3.1")
+				{
+					bcopy(encryptedpayload, out, payload_len);
+				}
+				else
+				{
+					mbedtls_aes_context aes;
 
-			mbedtls_aes_init(&aes);
-			mbedtls_aes_setkey_dec(&aes, (const unsigned char *)encryption_key.c_str(), encryption_key.length() * 8);
-			mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_DECRYPT, (const unsigned char *)encryptedpayload, out);
-			mbedtls_aes_free(&aes);
-			// unsigned char *out = aes.DecryptECB(encryptedpayload, payload_len, (unsigned char*)encryption_key.c_str());
-			//  trim padding chars from decrypted payload
-			uint8_t padding = out[payload_len - 1];
-			if (padding <= 16)
-				out[payload_len - padding] = 0;
+					mbedtls_aes_init(&aes);
+					mbedtls_aes_setkey_dec(&aes, (const unsigned char *)m_key.c_str(), m_key.length() * 8);
+					for (int i = 0; i < payload_len / 16; ++i)
+					{
+						mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_DECRYPT, (const unsigned char *)(encryptedpayload + i * 16), out + i * 16);
+					}
+					mbedtls_aes_free(&aes);
 
+					//  trim padding chars from decrypted payload
+					uint8_t padding = out[payload_len - 1];
+					if (padding <= 16)
+					{
+						out[payload_len - padding] = 0;
+					}
+				}
+			}
 			result += String((const char *)out);
-			std::cout << "recieved msg: "<< result<<"\n";
+			std::cout << "recieved msg: " << result.c_str() << "\n";
 			free(out);
 		}
 		else
@@ -239,61 +285,68 @@ String tuyaLocal::DecodeTuyaMessage(unsigned char *buffer, const int size, const
 	return result;
 }
 
-#if 0
-void  tuyaLocal::send_heartbeat(){
+String tuyaLocal::send_heartbeat()
+{
+	return "";
 	std::cout << "heartbeat\n";
 	unsigned char message_buffer[200];
-	int payload_len = BuildTuyaMessage(message_buffer, TUYA_HEART_BEAT, String(""));
-	send(message_buffer,payload_len);
+	String payload;
+	int payload_len = BuildTuyaMessage(message_buffer, TUYA_HEART_BEAT, payload);
+	send(message_buffer, payload_len);
+	int bytes = receive(message_buffer, 200);
+	return DecodeTuyaMessage(message_buffer, bytes);
 }
-#endif
 
-bool tuyaLocal::ConnectToDevice(const String &hostname, const int portnumber, uint8_t retries)
+bool tuyaLocal::ConnectToDevice(uint8_t retries)
 {
-	m_hostname = hostname;
-	m_portnumber = portnumber;
+	disconnect();
+	client = new WiFiClient();
+
 	m_retries = retries;
 	struct timeval tv;
 	tv.tv_sec = SOCKET_TIMEOUT_SECS;
 	tv.tv_usec = 0;
-	int flag =1;
-	for (auto i =0 ;i <retries;i++){
-	int res = client.connect(hostname.c_str(), portnumber);
-	if (res == 1){
-		//client.setSocketOption( SO_RCVTIMEO, ( char*)&tv, sizeof tv);
-	    client.setSocketOption(  SO_KEEPALIVE, ( char * )&flag, sizeof flag);
-        //  client.setSocketOption(  SO_REUSEADDR, ( char *)&flag, sizeof(flag));
-  
-		  client.setNoDelay(true);
-		  //send_heartbeat();
-		  //client.setTimeout(10);
-		return true;
-	}
-		
+	int flag = 1;
+	for (auto i = 0; i < retries; i++)
+	{
+		int res = client->connect(m_hostname.c_str(), m_portnumber);
+		if (res == 1)
+		{
+			// client.setSocketOption( SO_RCVTIMEO, ( char*)&tv, sizeof tv);
+			// client.setSocketOption(  SO_KEEPALIVE, ( char * )&flag, sizeof flag);
+			//   client.setSocketOption(  SO_REUSEADDR, ( char *)&flag, sizeof(flag));
+
+			client->setNoDelay(true);
+			// send_heartbeat();
+			// client.setTimeout(10);
+			return true;
+		}
+
 #ifdef DEBUG
-	
-		std::cout << hostname.c_str() <<":"<<portnumber << " Connect error:"<< res<<"\n";
+
+		std::cout << m_hostname.c_str() << ":" << m_portnumber << " Connect error:" << res << "\n";
 		std::this_thread::sleep_for(std::chrono::milliseconds(100));
 #endif
 	}
-	//std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+	// std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 
-return false;
+	return false;
 }
 
 int tuyaLocal::send(unsigned char *buffer, const unsigned int size)
 {
-	//reconnect();
+	// reconnect();
 	int err;
 	std::cout << "try and send\n";
-	//err = client.write(buffer, size+ sizeof(MESSAGE_SEND_HEADER) + sizeof(MESSAGE_SEND_TRAILER));
-	err = client.write(buffer, size);
+	// err = client.write(buffer, size+ sizeof(MESSAGE_SEND_HEADER) + sizeof(MESSAGE_SEND_TRAILER));
+	err = client->write(buffer, size);
 
-	std::cout << "sent:"<<err << " of "<<size<<"\n";
-	if (err < size){
+	std::cout << "sent:" << err << " of " << size << "\n";
+	if (err < size)
+	{
 		reconnect();
-		err = client.write(buffer, size);
-		std::cout << "resent:"<<err <<"\n";
+		err = client->write(buffer, size);
+		std::cout << "resent:" << err << "\n";
 	}
 	return err;
 }
@@ -304,57 +357,66 @@ int tuyaLocal::receive(unsigned char *buffer, const unsigned int maxsize, const 
 	int prefix_index = 0;
 	int trailer_index = 4;
 	int tries = 0;
-	int total=0;
+	int total = 0;
 	std::cout << "recieve\n";
-	//send_heartbeat();
-	while (trailer_index<8 && tries++ < 100)
+	// send_heartbeat();
+	while (trailer_index < 8 && tries++ < 10 && index <= minsize)
 	{
-		if (!client.connected()){
+		if (!client->connected())
+		{
 			std::cout << "client not connected\n";
 			break;
 		}
-		int numbytes = client.available();
-		if (numbytes >0 )std::cout << "available:"<< numbytes<<"\n";
+		int numbytes = client->available();
+		std::cout << "available:" << numbytes << "\n";
 		for (auto i = 0; i < numbytes; i++)
 		{
 			total++;
-			char c = client.read();
-			//std::cout << c << "\n";
-			if (trailer_index < 8 && c == MESSAGE_SEND_TRAILER[trailer_index] ){
+			char c = client->read();
+			// printf("%d: %.2x :", index, (uint8_t)c);
+			;
+			if (prefix_index == 4 && trailer_index < 8 && c == MESSAGE_SEND_TRAILER[trailer_index])
+			{
 				trailer_index++;
-				//std::cout << "t" << trailer_index<<"\n";
-			}else if(trailer_index < 8){
-				trailer_index=4;
+				// std::cout << "t" << trailer_index << "\n";
+			}
+			else
+			{
+				trailer_index = 4;
 			}
 			if (prefix_index < 4 && c != MESSAGE_SEND_HEADER[prefix_index])
 			{
 				index = 0;
 				prefix_index = 0;
-				//std::cout << "x";
+				// std::cout << "x";
 			}
 			else
 			{
-				//std::cout << "v" << (prefix_index+1)<<"\n";
+				// std::cout << "v" << (prefix_index + 1) << "\n";
 				buffer[index] = c;
 				index++;
-				if (prefix_index < 4){
+				if (prefix_index < 4)
+				{
 					prefix_index++;
 				}
 			}
-			
 		}
 		std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	}
-	std::cout << "read:"<< total << " recieved: "<< index << "\n";
+	std::cout << "read:" << total << " recieved: " << index << "\n";
 	return (int)index;
 }
 
 void tuyaLocal::disconnect()
 {
-	client.stop();
+	if (client)
+	{
+		delete client;
+	}
+	client = NULL;
 }
 
 bool tuyaLocal::reconnect()
 {
-	return ConnectToDevice(m_hostname, m_portnumber, m_retries);
+	return ConnectToDevice(m_retries);
 }
