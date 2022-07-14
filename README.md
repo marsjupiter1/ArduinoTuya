@@ -1,6 +1,10 @@
 # ArduinoTuya
 library for communicating with tuya devices via the cloud and local socket
 
+This is based on:
+
+https://github.com/gordonb3/tuyapp
+
 For example usage see:
 https://github.com/marsjupiter1/bigbutton/blob/main/bigbutton.ino
 
@@ -15,5 +19,5 @@ The code sample is still under development, but you can see it:
 4. turning a device on.
 
 The socket side of things is very much a work in progress.
-It only works on 3.3 devices currently.
+As of now some very messy code is able to operate both 3.1 and 3.3 devices.
 
