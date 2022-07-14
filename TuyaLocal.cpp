@@ -133,7 +133,7 @@ int tuyaLocal::BuildTuyaMessage(unsigned char *buffer, const uint8_t command, St
 		payload_len = encode_base64( (unsigned char *)&ecb[0], payload_len,ecb64);
 		
 		// add 3.1 info
-		std::cout << "(ecb64) base64 encoded: "<<ecb64 <<"\n";
+		//std::cout << "(ecb64) base64 encoded: "<<ecb64 <<"\n";
 		String premd5 = String("data=")+String((char *)ecb64);
 		
 		premd5 += "||lpv=3.1||" + m_key;
@@ -145,7 +145,7 @@ int tuyaLocal::BuildTuyaMessage(unsigned char *buffer, const uint8_t command, St
 		String md5mid = (char *)&md5str[8];
 		
 		String header = String("3.1") + md5mid;
-		std::cout << "header to "<<payload_pos<< " :"<<header.c_str()<<"\n";
+		//std::cout << "header to "<<payload_pos<< " :"<<header.c_str()<<"\n";
 		bcopy(header.c_str(), &buffer[payload_pos], header.length());
 		payload_pos += header.length();
 		std::cout << "data header length: "<<header.length()<< "\n";
@@ -156,8 +156,8 @@ int tuyaLocal::BuildTuyaMessage(unsigned char *buffer, const uint8_t command, St
 		std::cout << "dbg: 3.1 payload: ";
 		std::cout <<  ecb << "\n";
 	}
-	std::cout << "payload length: "<<payload_len<< "\n";
-	std::cout << "payload pos: "<<payload_pos<< "\n";
+	//std::cout << "payload length: "<<payload_len<< "\n";
+	//std::cout << "payload pos: "<<payload_pos<< "\n";
 	
 	bcopy(ecb, (char *)&buffer[payload_pos], payload_len);
 	bcopy(MESSAGE_SEND_TRAILER, (char *)&buffer[payload_pos + payload_len], sizeof(MESSAGE_SEND_TRAILER));
@@ -177,7 +177,7 @@ int tuyaLocal::BuildTuyaMessage(unsigned char *buffer, const uint8_t command, St
 	buffer[payload_pos + payload_len + 2] = (crc & 0x0000FF00) >> 8;
 	buffer[payload_pos + payload_len + 3] = crc & 0x000000FF;
 
-#ifdef DEBUG
+#ifdef DEBUG1
 	std::cout << "dbg: complete message: ";
 	for (int i = 0; i < (int)(payload_pos + payload_len + sizeof(MESSAGE_SEND_TRAILER)); ++i)
 		printf("%.2x", (uint8_t)buffer[i]);
@@ -314,8 +314,7 @@ int tuyaLocal::send(unsigned char *buffer, const unsigned int size)
 {
 	// reconnect();
 	int err;
-	std::cout << "try and send\n";
-	// err = client.write(buffer, size+ sizeof(MESSAGE_SEND_HEADER) + sizeof(MESSAGE_SEND_TRAILER));
+
 	err = client->write(buffer, size);
 
 	std::cout << "sent:" << err << " of " << size << "\n";
@@ -345,7 +344,7 @@ int tuyaLocal::receive(unsigned char *buffer, const unsigned int maxsize, const 
 			break;
 		}
 		int numbytes = client->available();
-		std::cout << "available:" << numbytes << "\n";
+		//std::cout << "available:" << numbytes << "\n";
 		for (auto i = 0; i < numbytes; i++)
 		{
 			total++;
