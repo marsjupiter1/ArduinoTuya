@@ -103,8 +103,8 @@ int tuyaLocal::BuildTuyaMessage(unsigned char *buffer, const uint8_t command, St
 #endif
 	}
 
-	unsigned char out[500];
-	memcpy((void *)out, (void *)payload.c_str(), payload_len+1);
+	unsigned char ecb[500];
+	memcpy((void *)ecb, (void *)payload.c_str(), payload_len+1);
 	if (encrypt || m_protocol != "3.1")
 	{
 
@@ -114,14 +114,14 @@ int tuyaLocal::BuildTuyaMessage(unsigned char *buffer, const uint8_t command, St
 			mbedtls_aes_init(&aes);
 			mbedtls_aes_setkey_enc(&aes, (const unsigned char *)m_key.c_str(), 128 /*encryption_key.length() * 8*/);
 
-			mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_ENCRYPT, (const unsigned char *)payload.c_str() + i * 16, &out[i * 16]);
+			mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_ENCRYPT, (const unsigned char *)payload.c_str() + i * 16, &ecb[i * 16]);
 			mbedtls_aes_free(&aes);
 		}
 
 #ifdef DEBUG
 		std::cout << "dbg: encrypted payload: ";
 		for (int i = 0; i < payload_len; ++i)
-			printf("%.2x", (uint8_t)out[i]);
+			printf("%.2x", (uint8_t)ecb[i]);
 		std::cout << "\n";
 #endif
 	}
@@ -138,30 +138,33 @@ int tuyaLocal::BuildTuyaMessage(unsigned char *buffer, const uint8_t command, St
 			payload_pos += sizeof(PROTOCOL_33_HEADER);
 		}
 	}
+	unsigned char ecb64[200]; 
 	if (m_protocol == "3.1" && encrypt)
 	{
 		// convert to base64
 	
-		unsigned char out1[200]; 
-		//payload_len = encode_base64( (unsigned char *)&out[0], payload_len,out1);
-		//mbedtls_base64_encode( out,500,(unsigned char *)e.c_str(), payload_len,&payload_len);
+	
+		unsigned char ecb64ecb[200];
+		//unsigned char ecb64ecb64[200];
+		payload_len = encode_base64( (unsigned char *)&ecb[0], payload_len,ecb64);
+		
 		// add 3.1 info
-		std::cout << "base64 encoded: "<<out1 <<"\n";
+		std::cout << "(ecb64) base64 encoded: "<<ecb64 <<"\n";
 		for (int i = 0; i < payload_len / 16; ++i)
 		{
 			mbedtls_aes_context aes;
 			mbedtls_aes_init(&aes);
 			mbedtls_aes_setkey_enc(&aes, (const unsigned char *)m_key.c_str(), 128 /*encryption_key.length() * 8*/);
 
-			mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_ENCRYPT, ((const unsigned char *)out) + i * 16, &out1[i * 16]);
+			mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_ENCRYPT, ((const unsigned char *)ecb64) + i * 16, &ecb64ecb[i * 16]);
 			mbedtls_aes_free(&aes);
 		}
-		encode_base64( (unsigned char *)&out1[0], payload_len,out);
-		std::cout << "ecb encoded: "<<out <<"\n";
-		String premd5 = String("data=")+String((char *)out);
+		//payload_len = encode_base64( (unsigned char *)&ecb64ecb[0], payload_len,ecb64ecb64);
+		//std::cout << "(ecb64ecb64) ecb encoded: "<<ecb64ecb64 <<"\n";
+		String premd5 = String("data=")+String((char *)ecb64);
 		
 		premd5 += "||lpv=3.1||" + m_key;
-		std::cout << "3.1md5 string: "<< premd5.c_str()<<"\n";
+		std::cout << "(ecb64) 3.1md5 string: "<< premd5.c_str()<<"\n";
 		unsigned char *hash = MD5::make_hash((char *)premd5.c_str());
 		// generate the digest (hex encoding) of our hash
 		char *md5str = MD5::make_digest(hash, 16);
@@ -175,14 +178,15 @@ int tuyaLocal::BuildTuyaMessage(unsigned char *buffer, const uint8_t command, St
 		std::cout << "data header length: "<<header.length()<< "\n";
 		free(hash);
 		free(md5str);
+		strcpy((char *)ecb,(char *)ecb64);
 	}else{
 		std::cout << "dbg: 3.1 payload: ";
-		std::cout <<  out << "\n";
+		std::cout <<  ecb << "\n";
 	}
 	std::cout << "payload length: "<<payload_len<< "\n";
 	std::cout << "payload pos: "<<payload_pos<< "\n";
 	
-	bcopy(out, (char *)&buffer[payload_pos], payload_len);
+	bcopy(ecb, (char *)&buffer[payload_pos], payload_len);
 	bcopy(MESSAGE_SEND_TRAILER, (char *)&buffer[payload_pos + payload_len], sizeof(MESSAGE_SEND_TRAILER));
 
 	// insert command code in int32 @msg[8] (single byte value @msg[11])
