@@ -1,12 +1,11 @@
 /*
  *  Client interface for local Tuya device access
  *
- *  Copyright 2022 - gordonb3 https://github.com/gordonb3/tuyapp
+ *  Copyright 2022 - Martin Walker - https://github.com/marsjupiter1/ArduinoTuya
  *
  *  Licensed under GNU General Public License 3.0 or later.
  *  Some rights reserved. See COPYING, AUTHORS.
  *
- *  @license GPL-3.0+ <https://github.com/gordonb3/tuyapp/blob/master/LICENSE>
  */
 
 #define DEBUG
@@ -15,9 +14,8 @@
 #include "TuyaLocal.hpp"
 #include "mbedtls/aes.h"
 #include "MD5.h"
-//#include "TI_aes_128_encr_only.h"
 #include <netdb.h>
-//#include <zlib.h>
+
 #include <sstream>
 #include <thread>
 #include <chrono>
@@ -145,7 +143,7 @@ int tuyaLocal::BuildTuyaMessage(unsigned char *buffer, const uint8_t command, St
 	
 	
 		unsigned char ecb64ecb[200];
-		//unsigned char ecb64ecb64[200];
+
 		payload_len = encode_base64( (unsigned char *)&ecb[0], payload_len,ecb64);
 		
 		// add 3.1 info
@@ -159,8 +157,7 @@ int tuyaLocal::BuildTuyaMessage(unsigned char *buffer, const uint8_t command, St
 			mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_ENCRYPT, ((const unsigned char *)ecb64) + i * 16, &ecb64ecb[i * 16]);
 			mbedtls_aes_free(&aes);
 		}
-		//payload_len = encode_base64( (unsigned char *)&ecb64ecb[0], payload_len,ecb64ecb64);
-		//std::cout << "(ecb64ecb64) ecb encoded: "<<ecb64ecb64 <<"\n";
+
 		String premd5 = String("data=")+String((char *)ecb64);
 		
 		premd5 += "||lpv=3.1||" + m_key;
