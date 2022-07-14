@@ -9,7 +9,7 @@
  */
 
 #define DEBUG
-#define SOCKET_TIMEOUT_SECS 15
+#define SOCKET_TIMEOUT_SECS 2
 #include <stdio.h>
 #include "TuyaLocal.hpp"
 #include "mbedtls/aes.h"
@@ -57,12 +57,6 @@ String tuyaLocal::getDps()
 
 	int payload_len = BuildTuyaMessage(message_buffer, TUYA_DP_QUERY, payload);
 
-	for (auto i = 0; i < payload_len; i++)
-	{
-		Serial.print(message_buffer[i]);
-	}
-	Serial.println("");
-
 	int numbytes = send(message_buffer, payload_len);
 	if (numbytes > 0)
 	{
@@ -70,6 +64,7 @@ String tuyaLocal::getDps()
 		numbytes = receive(message_buffer, MAX_BUFFER_SIZE - 1);
 
 		String tuyaresponse = DecodeTuyaMessage(message_buffer, numbytes);
+		return tuyaresponse;
 	}
 	return "";
 }
@@ -93,12 +88,7 @@ int tuyaLocal::BuildTuyaMessage(unsigned char *buffer, const uint8_t command, St
 			payload += (char)padding;
 		}
 		payload_len = (int)payload.length();
-#ifdef DEBUG
-		std::cout << "dbg: padded payload (len=" << payload_len << "): ";
-		for (int i = 0; i < payload_len; ++i)
-			printf("%.2x", (uint8_t)payload[i]);
-		std::cout << "\n";
-#endif
+
 	}
 
 	unsigned char ecb[500];
@@ -110,8 +100,7 @@ int tuyaLocal::BuildTuyaMessage(unsigned char *buffer, const uint8_t command, St
 		{
 			mbedtls_aes_context aes;
 			mbedtls_aes_init(&aes);
-			mbedtls_aes_setkey_enc(&aes, (const unsigned char *)m_key.c_str(), 128 /*encryption_key.length() * 8*/);
-
+			mbedtls_aes_setkey_enc(&aes, (const unsigned char *)m_key.c_str(), 128 );
 			mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_ENCRYPT, (const unsigned char *)payload.c_str() + i * 16, &ecb[i * 16]);
 			mbedtls_aes_free(&aes);
 		}
@@ -136,28 +125,15 @@ int tuyaLocal::BuildTuyaMessage(unsigned char *buffer, const uint8_t command, St
 			payload_pos += sizeof(PROTOCOL_33_HEADER);
 		}
 	}
+
 	unsigned char ecb64[200]; 
 	if (m_protocol == "3.1" && encrypt)
 	{
-		// convert to base64
-	
-	
-		unsigned char ecb64ecb[200];
-
+		
 		payload_len = encode_base64( (unsigned char *)&ecb[0], payload_len,ecb64);
 		
 		// add 3.1 info
 		std::cout << "(ecb64) base64 encoded: "<<ecb64 <<"\n";
-		for (int i = 0; i < payload_len / 16; ++i)
-		{
-			mbedtls_aes_context aes;
-			mbedtls_aes_init(&aes);
-			mbedtls_aes_setkey_enc(&aes, (const unsigned char *)m_key.c_str(), 128 /*encryption_key.length() * 8*/);
-
-			mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_ENCRYPT, ((const unsigned char *)ecb64) + i * 16, &ecb64ecb[i * 16]);
-			mbedtls_aes_free(&aes);
-		}
-
 		String premd5 = String("data=")+String((char *)ecb64);
 		
 		premd5 += "||lpv=3.1||" + m_key;
