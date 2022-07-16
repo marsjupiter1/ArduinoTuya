@@ -8,8 +8,8 @@
  *
  */
 
-#define DEBUG
-#define SOCKET_TIMEOUT_SECS 2
+#undef DEBUG
+#define SOCKET_TIMEOUT_SECS 1
 #include <stdio.h>
 #include "TuyaLocal.hpp"
 #include "mbedtls/aes.h"
@@ -25,10 +25,7 @@
 /* ... */
 Arduino_CRC32 Crc32;
 
-#ifdef DEBUG
 #include <iostream>
-
-#endif
 
 tuyaLocal::tuyaLocal(String host, String device, String key, const char *protocol, int port)
 {
@@ -46,7 +43,72 @@ tuyaLocal::~tuyaLocal()
 }
 
 #define MAX_BUFFER_SIZE 500
-String tuyaLocal::getDps()
+
+bool tuyaLocal::dpsTrue(String dps,const char *field){
+	String search = String("\"")+String(field)+String("\":true");
+	if (dps.indexOf(search)!=-1){
+		return true;
+	}else{
+		return false;
+	}
+
+}
+
+bool tuyaLocal::dpsFalse(String dps,const char *field){
+
+	String search = String("\"")+String(field)+String("\":false");
+	Serial.println(dps);
+	Serial.println(search);
+	if (dps.indexOf(search)!=-1){
+		return true;
+	}else{
+		return false;
+	}
+
+}
+
+bool tuyaLocal::setDps(String &dps,String &result)
+{
+  unsigned char message_buffer[1024];
+  int numbytes;
+
+  long currenttime = time(NULL) ;
+
+  String   ss_payload = String("{\"devId\":\"") +
+                        String(m_device_id) + String("\",\"gwId\":\"") + String( m_device_id) +
+                        String("\",\"uid\":\"\",") + String("\"t\":") + String( currenttime) +String(",") + dps +String("}");
+
+  Serial.println(ss_payload);
+  int payload_len = BuildTuyaMessage(message_buffer, TUYA_CONTROL, ss_payload, true);
+
+  numbytes = send(message_buffer, payload_len);
+  if (numbytes < 0) {
+    Serial.print("ERROR writing to socket: ");
+    Serial.println(numbytes);
+    return false;
+  }
+
+  numbytes = receive(message_buffer, 1023, 30);
+  if (numbytes < 0) {
+    Serial.print("ERROR reading from socket: ");
+    Serial.println(numbytes);
+    return false;
+  }
+
+  int err = TL_OK;
+  if (numbytes>0){
+  		int err = DecodeTuyaMessage(message_buffer, numbytes, result );
+   		Serial.print("TUYA SAYS DPS: " ); Serial.print(err);Serial.print(" : "); Serial.println(result);
+  }
+  if (err == TL_OK){
+   return getDps(result);
+  }else{
+	  return false;
+  }					
+}
+
+
+bool tuyaLocal::getDps(String &tuyaresponse)
 {
 
 	unsigned char message_buffer[MAX_BUFFER_SIZE];
@@ -55,18 +117,25 @@ String tuyaLocal::getDps()
 
 	payload = String("{\"gwId\":\"") + m_device_id + String("\",\"devId\":\"") + m_device_id + String("\",\"uid\":\"") + m_device_id + String("\",\"t\":\"") + String(currenttime) + String("\"}");
 
-	int payload_len = BuildTuyaMessage(message_buffer, TUYA_DP_QUERY, payload);
+	for (int i = 0; i < m_retries;i++){
+		int payload_len = BuildTuyaMessage(message_buffer, TUYA_DP_QUERY, payload);
 
-	int numbytes = send(message_buffer, payload_len);
-	if (numbytes > 0)
-	{
+		int numbytes = send(message_buffer, payload_len);
+		if (numbytes > 0)
+		{
 
-		numbytes = receive(message_buffer, MAX_BUFFER_SIZE - 1);
+			numbytes = receive(message_buffer, MAX_BUFFER_SIZE - 1);
 
-		String tuyaresponse = DecodeTuyaMessage(message_buffer, numbytes);
-		return tuyaresponse;
+			int err  = DecodeTuyaMessage(message_buffer, numbytes,tuyaresponse);
+			if (err == TL_OK){
+				Serial.print("Dps: ");Serial.println(tuyaresponse);
+				return true;
+			}else if(err != TL_EMPTY ){
+				return false;
+			}	
+		}	
 	}
-	return "";
+	return false;
 }
 
 
@@ -153,8 +222,10 @@ int tuyaLocal::BuildTuyaMessage(unsigned char *buffer, const uint8_t command, St
 		free(md5str);
 		strcpy((char *)ecb,(char *)ecb64);
 	}else{
+#ifdef DEBUG		
 		std::cout << "dbg: 3.1 payload: ";
 		std::cout <<  ecb << "\n";
+#endif		
 	}
 	//std::cout << "payload length: "<<payload_len<< "\n";
 	//std::cout << "payload pos: "<<payload_pos<< "\n";
@@ -191,10 +262,10 @@ int tuyaLocal::BuildTuyaMessage(unsigned char *buffer, const uint8_t command, St
 }
 
 
-String tuyaLocal::DecodeTuyaMessage(unsigned char *buffer, const int size)
+int tuyaLocal::DecodeTuyaMessage(unsigned char *buffer, const int size, String &result)
 {
-	String result;
-
+	
+    result = "not parsed";
 	int message_start = 0;
 	while (message_start < size)
 	{
@@ -217,13 +288,10 @@ String tuyaLocal::DecodeTuyaMessage(unsigned char *buffer, const int size)
 				encryptedpayload += 15;
 				payload_len -= 15;
 			}
-			else
-			{
-				m_protocol = "3.1";
-			}
+			
 			unsigned char *out = (unsigned char *)calloc(payload_len + 1, sizeof(char));
 			// AES aes(AESKeyLength::AES_128);
-			std::cout << "payload length: " << payload_len << "\n";
+			//std::cout << "payload length: " << payload_len << "\n";
 			if (payload_len > 0)
 			{
 				if (m_protocol == "3.1")
@@ -249,53 +317,55 @@ String tuyaLocal::DecodeTuyaMessage(unsigned char *buffer, const int size)
 						out[payload_len - padding] = 0;
 					}
 				}
+			}else{
+				return TL_EMPTY;
 			}
-			result += String((const char *)out);
+			result = String((const char *)out);
 			std::cout << "recieved msg: " << result.c_str() << "\n";
 			free(out);
 		}
-		else
-			result += "{\"msg\":\"crc error\"}";
-
+		else{
+			return TL_ERROR;
+		}
 		message_start += message_size;
 	}
-	return result;
+	return TL_OK;
 }
 
-String tuyaLocal::send_heartbeat()
-{
-	return "";
-	std::cout << "heartbeat\n";
-	unsigned char message_buffer[200];
-	String payload;
-	int payload_len = BuildTuyaMessage(message_buffer, TUYA_HEART_BEAT, payload);
-	send(message_buffer, payload_len);
-	int bytes = receive(message_buffer, 200);
-	return DecodeTuyaMessage(message_buffer, bytes);
-}
 
-bool tuyaLocal::ConnectToDevice(uint8_t retries)
-{
-	disconnect();
-	client = new WiFiClient();
 
+bool tuyaLocal::connect(uint8_t retries,int timeout)
+{
+	
+	if (timeout <1000)timeout=1000;
 	m_retries = retries;
+	m_timeout = timeout;
+	if (!client || !client->connected()){
+		Serial.println("disconnecting");
+		disconnect();
+		client = new WiFiClient();
+		Serial.println("disconnected");
+	}else{
+		Serial.println("already connected");
+		return true;
+	}
+	
 	struct timeval tv;
 	tv.tv_sec = SOCKET_TIMEOUT_SECS;
 	tv.tv_usec = 0;
 	int flag = 1;
 	for (auto i = 0; i < retries; i++)
 	{
-		int res = client->connect(m_hostname.c_str(), m_portnumber);
+		int res = client->connect(m_hostname.c_str(), m_portnumber,timeout);
 		if (res == 1)
 		{
 			// client.setSocketOption( SO_RCVTIMEO, ( char*)&tv, sizeof tv);
-			// client.setSocketOption(  SO_KEEPALIVE, ( char * )&flag, sizeof flag);
-			//   client.setSocketOption(  SO_REUSEADDR, ( char *)&flag, sizeof(flag));
-
-			client->setNoDelay(true);
-			// send_heartbeat();
-			// client.setTimeout(10);
+			client->setSocketOption(  SO_KEEPALIVE, ( char * )&flag, sizeof flag);
+			client->setSocketOption(  SO_REUSEADDR, ( char *)&flag, sizeof(flag));
+			if (m_protocol == "3.3"){
+				
+				client->setTimeout(SOCKET_TIMEOUT_SECS);
+			}
 			return true;
 		}
 
@@ -310,6 +380,10 @@ bool tuyaLocal::ConnectToDevice(uint8_t retries)
 	return false;
 }
 
+bool tuyaLocal::connected(){
+	if (!client) return false;
+	return client->connected();
+}
 int tuyaLocal::send(unsigned char *buffer, const unsigned int size)
 {
 	// reconnect();
@@ -334,7 +408,7 @@ int tuyaLocal::receive(unsigned char *buffer, const unsigned int maxsize, const 
 	int trailer_index = 4;
 	int tries = 0;
 	int total = 0;
-	std::cout << "recieve\n";
+	//std::cout << "recieve\n";
 	// send_heartbeat();
 	while (trailer_index < 8 && tries++ < 10 && index <= minsize)
 	{
@@ -394,5 +468,6 @@ void tuyaLocal::disconnect()
 
 bool tuyaLocal::reconnect()
 {
-	return ConnectToDevice(m_retries);
+	disconnect();
+	return connect(m_retries,m_timeout);
 }
